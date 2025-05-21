@@ -93,6 +93,11 @@ public:
             typedef int (*compar_r_t)(const void* lhs, const void* rhs, void* state);
             status_t        sort(compar_t cmp);
             status_t        sort(compar_r_t cmp, void* state);
+            
+            // Resizes the vector to the given size.
+            // If new_size is smaller than the current size, elements are destroyed.
+            // If new_size is larger, new elements are default-constructed.
+            ssize_t         resize(size_t new_size);
 
 protected:
             size_t          itemSize() const;
@@ -105,16 +110,6 @@ protected:
     virtual void            do_move_forward(void* dest, const void* from, size_t num) const = 0;
     virtual void            do_move_backward(void* dest, const void* from, size_t num) const = 0;
 
-    // take care of FBC...
-    virtual void            reservedVectorImpl1();
-    virtual void            reservedVectorImpl2();
-    virtual void            reservedVectorImpl3();
-    virtual void            reservedVectorImpl4();
-    virtual void            reservedVectorImpl5();
-    virtual void            reservedVectorImpl6();
-    virtual void            reservedVectorImpl7();
-    virtual void            reservedVectorImpl8();
-    
 private:
         void* _grow(size_t where, size_t amount);
         void  _shrink(size_t where, size_t amount);
@@ -166,20 +161,12 @@ protected:
     virtual int             do_compare(const void* lhs, const void* rhs) const = 0;
 
     // take care of FBC...
-    virtual void            reservedSortedVectorImpl1();
-    virtual void            reservedSortedVectorImpl2();
-    virtual void            reservedSortedVectorImpl3();
-    virtual void            reservedSortedVectorImpl4();
-    virtual void            reservedSortedVectorImpl5();
-    virtual void            reservedSortedVectorImpl6();
-    virtual void            reservedSortedVectorImpl7();
-    virtual void            reservedSortedVectorImpl8();
-
 private:
-            ssize_t         _indexOrderOf(const void* item, size_t* order = 0) const;
+            ssize_t         _indexOrderOf(const void* item, size_t* order = nullptr) const;
 
-            // these are made private, because they can't be used on a SortedVector
-            // (they don't have an implementation either)
+            // These are made private because they can't be used on a SortedVectorImpl
+            // (they don't have an implementation in SortedVectorImpl, and calling them
+            // would bypass the sorted nature of the vector).
             ssize_t         add();
             void            pop();
             void            push();

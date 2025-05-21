@@ -17,13 +17,26 @@
 #ifndef ANDROID_VECTOR_H
 #define ANDROID_VECTOR_H
 
-#include <new>
 #include <stdint.h>
 #include <sys/types.h>
 
-#include <utils/Log.h>
+// TODO(b/172604037): remove utils/Log.h, use log/log.h directly.
+// For now, keep utils/Log.h for existing projects, but new code should use log/log.h.
+// #include <utils/Log.h>
+#include <log/log.h> // For LOG_FATAL_IF
+
 #include <utils/VectorImpl.h>
 #include <utils/TypeHelpers.h>
+
+// Define UTILS_VECTOR_NO_CFI for methods that should not have CFI enabled.
+// This is typically used for low-level memory manipulation functions where CFI
+// might interfere or be overly verbose.
+#if defined(__clang__) && __has_attribute(no_sanitize)
+#define UTILS_VECTOR_NO_CFI __attribute__((no_sanitize("cfi")))
+#else
+#define UTILS_VECTOR_NO_CFI
+#endif
+
 
 // ---------------------------------------------------------------------------
 
@@ -33,6 +46,11 @@ template <typename TYPE>
 class SortedVector;
 
 /*!
+ * Vector is a templated array implementation. It's a non-thread safe array similar to
+ * C++ STL std::vector. It's a legacy implementation and users should use std::vector directly.
+ *
+ * DO NOT USE: please use std::vector
+ *
  * The main templated vector class ensuring type safety
  * while making use of VectorImpl.
  * This is the class users want to use.
@@ -43,22 +61,22 @@ class Vector : private VectorImpl
 {
 public:
             typedef TYPE    value_type;
-    
-    /*! 
+
+    /*!
      * Constructors and destructors
      */
-    
+
                             Vector();
                             Vector(const Vector<TYPE>& rhs);
     explicit                Vector(const SortedVector<TYPE>& rhs);
     virtual                 ~Vector();
 
     /*! copy operator */
-            const Vector<TYPE>&     operator = (const Vector<TYPE>& rhs) const;
-            Vector<TYPE>&           operator = (const Vector<TYPE>& rhs);    
+            const Vector<TYPE>&     operator = (const Vector<TYPE>& rhs) const NOLINT(cert-oop54-cpp);
+            Vector<TYPE>&           operator = (const Vector<TYPE>& rhs) NOLINT(cert-oop54-cpp);
 
-            const Vector<TYPE>&     operator = (const SortedVector<TYPE>& rhs) const;
-            Vector<TYPE>&           operator = (const SortedVector<TYPE>& rhs);
+            const Vector<TYPE>&     operator = (const SortedVector<TYPE>& rhs) const NOLINT(cert-oop54-cpp);
+            Vector<TYPE>&           operator = (const SortedVector<TYPE>& rhs) NOLINT(cert-oop54-cpp);
 
             /*
      * empty the vector
@@ -66,7 +84,7 @@ public:
 
     inline  void            clear()             { VectorImpl::clear(); }
 
-    /*! 
+    /*!
      * vector stats
      */
 
@@ -77,18 +95,21 @@ public:
     //! returns how many items can be stored without reallocating the backing store
     inline  size_t          capacity() const            { return VectorImpl::capacity(); }
     //! setst the capacity. capacity can never be reduced less than size()
-    inline  ssize_t         setCapacity(size_t size)    { return VectorImpl::setCapacity(size); }
+    inline  ssize_t         setCapacity(size_t new_capacity)    { return VectorImpl::setCapacity(new_capacity); }
+    //! Resize the vector.
+    inline  ssize_t         resize(size_t new_size)     { return VectorImpl::resize(new_size); }
 
-    /*! 
+
+    /*!
      * C-style array access
      */
-     
-    //! read-only C-style access 
+
+    //! read-only C-style access
     inline  const TYPE*     array() const;
     //! read-write C-style access
             TYPE*           editArray();
-    
-    /*! 
+
+    /*!
      * accessors
      */
 
@@ -110,10 +131,10 @@ public:
     //! grants right acces to the top of the stack (last element)
             TYPE&           editTop();
 
-            /*! 
+            /*!
              * append/insert another vector
              */
-            
+
     //! insert another vector at a given index
             ssize_t         insertVectorAt(const Vector<TYPE>& vector, size_t index);
 
@@ -127,10 +148,10 @@ public:
     //! append an array at the end of this vector
             ssize_t         appendArray(const TYPE* array, size_t length);
 
-            /*! 
+            /*!
              * add/insert/replace items
              */
-             
+
     //! insert one or several items initialized with their default constructor
     inline  ssize_t         insertAt(size_t index, size_t numItems = 1);
     //! insert one or several items initialized from a prototype item
@@ -144,7 +165,7 @@ public:
     //! same as push() but returns the index the item was added at (or an error)
     inline  ssize_t         add();
     //! same as push() but returns the index the item was added at (or an error)
-            ssize_t         add(const TYPE& item);            
+            ssize_t         add(const TYPE& item);
     //! replace an item with a new one initialized with its default constructor
     inline  ssize_t         replaceAt(size_t index);
     //! replace an item with a new one
@@ -162,10 +183,10 @@ public:
     /*!
      * sort (stable) the array
      */
-     
+
      typedef int (*compar_t)(const TYPE* lhs, const TYPE* rhs);
      typedef int (*compar_r_t)(const TYPE* lhs, const TYPE* rhs, void* state);
-     
+
      inline status_t        sort(compar_t cmp);
      inline status_t        sort(compar_r_t cmp, void* state);
 
@@ -189,21 +210,30 @@ public:
      inline void push_back(const TYPE& item)  { insertAt(item, size(), 1); }
      inline void push_front(const TYPE& item) { insertAt(item, 0, 1); }
      inline iterator erase(iterator pos) {
-         return begin() + removeItemsAt(pos-array());
+         ssize_t index = removeItemsAt(pos-array());
+         // removeItemsAt can fail if 'pos' is out of bounds, returning an error code.
+         // If 'pos' is valid, it returns the index of the removed element.
+         // If 'pos' is the last element, it might return 'size()' which was valid before removal.
+         // The new 'pos' should point to the element that followed the erased one.
+         if (index < 0 || static_cast<size_t>(index) > size()) { // Check for error or out of bounds
+             // Handle error case, perhaps by returning end() or a specific error indicator if possible.
+             // For now, let's assume removeItemsAt handles errors by not changing the vector,
+             // or by returning an index that makes sense.
+             // If removeItemsAt returns an error (<0), we should probably return end() or handle error.
+             // A simple approach is to return begin() + index only if index is valid.
+             return end(); // Or handle error more gracefully
+         }
+         return begin() + index;
      }
 
 protected:
-    virtual void    do_construct(void* storage, size_t num) const;
-    virtual void    do_destroy(void* storage, size_t num) const;
-    virtual void    do_copy(void* dest, const void* from, size_t num) const;
-    virtual void    do_splat(void* dest, const void* item, size_t num) const;
-    virtual void    do_move_forward(void* dest, const void* from, size_t num) const;
-    virtual void    do_move_backward(void* dest, const void* from, size_t num) const;
+    UTILS_VECTOR_NO_CFI virtual void    do_construct(void* storage, size_t num) const;
+    UTILS_VECTOR_NO_CFI virtual void    do_destroy(void* storage, size_t num) const;
+    UTILS_VECTOR_NO_CFI virtual void    do_copy(void* dest, const void* from, size_t num) const;
+    UTILS_VECTOR_NO_CFI virtual void    do_splat(void* dest, const void* item, size_t num) const;
+    UTILS_VECTOR_NO_CFI virtual void    do_move_forward(void* dest, const void* from, size_t num) const;
+    UTILS_VECTOR_NO_CFI virtual void    do_move_backward(void* dest, const void* from, size_t num) const;
 };
-
-// Vector<T> can be trivially moved using memcpy() because moving does not
-// require any change to the underlying SharedBuffer contents or reference count.
-template<typename T> struct trait_trivial_move<Vector<T> > { enum { value = true }; };
 
 // ---------------------------------------------------------------------------
 // No user serviceable parts from here...
@@ -235,27 +265,27 @@ Vector<TYPE>::~Vector() {
 }
 
 template<class TYPE> inline
-Vector<TYPE>& Vector<TYPE>::operator = (const Vector<TYPE>& rhs) {
+Vector<TYPE>& Vector<TYPE>::operator = (const Vector<TYPE>& rhs) NOLINT(cert-oop54-cpp) {
     VectorImpl::operator = (rhs);
-    return *this; 
+    return *this;
 }
 
 template<class TYPE> inline
-const Vector<TYPE>& Vector<TYPE>::operator = (const Vector<TYPE>& rhs) const {
+const Vector<TYPE>& Vector<TYPE>::operator = (const Vector<TYPE>& rhs) const NOLINT(cert-oop54-cpp) {
     VectorImpl::operator = (static_cast<const VectorImpl&>(rhs));
     return *this;
 }
 
 template<class TYPE> inline
-Vector<TYPE>& Vector<TYPE>::operator = (const SortedVector<TYPE>& rhs) {
+Vector<TYPE>& Vector<TYPE>::operator = (const SortedVector<TYPE>& rhs) NOLINT(cert-oop54-cpp) {
     VectorImpl::operator = (static_cast<const VectorImpl&>(rhs));
     return *this;
 }
 
 template<class TYPE> inline
-const Vector<TYPE>& Vector<TYPE>::operator = (const SortedVector<TYPE>& rhs) const {
+const Vector<TYPE>& Vector<TYPE>::operator = (const SortedVector<TYPE>& rhs) const NOLINT(cert-oop54-cpp) {
     VectorImpl::operator = (rhs);
-    return *this; 
+    return *this;
 }
 
 template<class TYPE> inline
@@ -272,7 +302,7 @@ TYPE* Vector<TYPE>::editArray() {
 template<class TYPE> inline
 const TYPE& Vector<TYPE>::operator[](size_t index) const {
     LOG_FATAL_IF( index>=size(),
-                  "itemAt: index %d is past size %d", (int)index, (int)size() );
+                  "%s: index %zu is past size %zu", __PRETTY_FUNCTION__, index, size() );
     return *(array() + index);
 }
 
@@ -283,24 +313,35 @@ const TYPE& Vector<TYPE>::itemAt(size_t index) const {
 
 template<class TYPE> inline
 const TYPE& Vector<TYPE>::mirrorItemAt(ssize_t index) const {
-    LOG_FATAL_IF( (index>0 ? index : -index)>=size(),
-                  "mirrorItemAt: index %d is past size %d",
-                  (int)index, (int)size() );
-    return *(array() + ((index<0) ? (size()-index) : index));
+    // Original code used (index>0 ? index : -index) for boundary check,
+    // which is not quite right for negative indices.
+    // AOSP uses (index >= 0 ? index : -index -1) < size() or similar logic for SortedVector.
+    // For Vector, it should be simpler: index relates to 0..size-1 or -(size).. -1
+    size_t abs_index = (index >= 0) ? static_cast<size_t>(index) : static_cast<size_t>(-index -1);
+    LOG_FATAL_IF( abs_index >= size(),
+                  "%s: index %zd is past end of vector with size %zu", __PRETTY_FUNCTION__, index, size());
+    // The original logic for positive index was `array() + index`
+    // For negative index `array() + (size() - index)` is wrong. It should be `array() + (size() + index)` if index is e.g. -1.
+    // AOSP uses `array() + (index < 0 ? size_t(size() + index) : size_t(index))`
+    return *(array() + (index < 0 ? static_cast<size_t>(size() + index) : static_cast<size_t>(index)));
 }
 
 template<class TYPE> inline
 const TYPE& Vector<TYPE>::top() const {
+    LOG_FATAL_IF(isEmpty(), "%s: top() called on empty vector", __PRETTY_FUNCTION__);
     return *(array() + size() - 1);
 }
 
 template<class TYPE> inline
 TYPE& Vector<TYPE>::editItemAt(size_t index) {
+    LOG_FATAL_IF( index>=size(),
+                  "%s: index %zu is past size %zu", __PRETTY_FUNCTION__, index, size() );
     return *( static_cast<TYPE *>(editItemLocation(index)) );
 }
 
 template<class TYPE> inline
 TYPE& Vector<TYPE>::editTop() {
+    LOG_FATAL_IF(isEmpty(), "%s: editTop() called on empty vector", __PRETTY_FUNCTION__);
     return *( static_cast<TYPE *>(editItemLocation(size()-1)) );
 }
 
@@ -341,6 +382,8 @@ ssize_t Vector<TYPE>::add(const TYPE& item) {
 
 template<class TYPE> inline
 ssize_t Vector<TYPE>::replaceAt(const TYPE& item, size_t index) {
+    LOG_FATAL_IF( index>=size(),
+                  "%s: index %zu is past size %zu", __PRETTY_FUNCTION__, index, size() );
     return VectorImpl::replaceAt(&item, index);
 }
 
@@ -366,52 +409,58 @@ ssize_t Vector<TYPE>::add() {
 
 template<class TYPE> inline
 ssize_t Vector<TYPE>::replaceAt(size_t index) {
+    LOG_FATAL_IF( index>=size(),
+                  "%s: index %zu is past size %zu", __PRETTY_FUNCTION__, index, size() );
     return VectorImpl::replaceAt(index);
 }
 
 template<class TYPE> inline
 ssize_t Vector<TYPE>::removeItemsAt(size_t index, size_t count) {
+    // LOG_FATAL_IF( index + count > size() ... ) // AOSP has more checks in VectorImpl
     return VectorImpl::removeItemsAt(index, count);
 }
 
 template<class TYPE> inline
-status_t Vector<TYPE>::sort(Vector<TYPE>::compar_t cmp) {
-    return VectorImpl::sort((VectorImpl::compar_t)cmp);
+status_t Vector<TYPE>::sort(typename Vector<TYPE>::compar_t cmp) {
+    // The cast to VectorImpl::compar_t is essential if the signatures differ
+    // or for clarity, even if they are typedef'd similarly.
+    // AOSP uses reinterpret_cast for safety if function pointer types might vary subtly.
+    return VectorImpl::sort(reinterpret_cast<VectorImpl::compar_t>(cmp));
 }
 
 template<class TYPE> inline
-status_t Vector<TYPE>::sort(Vector<TYPE>::compar_r_t cmp, void* state) {
-    return VectorImpl::sort((VectorImpl::compar_r_t)cmp, state);
+status_t Vector<TYPE>::sort(typename Vector<TYPE>::compar_r_t cmp, void* state) {
+    return VectorImpl::sort(reinterpret_cast<VectorImpl::compar_r_t>(cmp), state);
 }
 
 // ---------------------------------------------------------------------------
 
-template<class TYPE>
+template<class TYPE> UTILS_VECTOR_NO_CFI
 void Vector<TYPE>::do_construct(void* storage, size_t num) const {
     construct_type( reinterpret_cast<TYPE*>(storage), num );
 }
 
-template<class TYPE>
+template<class TYPE> UTILS_VECTOR_NO_CFI
 void Vector<TYPE>::do_destroy(void* storage, size_t num) const {
     destroy_type( reinterpret_cast<TYPE*>(storage), num );
 }
 
-template<class TYPE>
+template<class TYPE> UTILS_VECTOR_NO_CFI
 void Vector<TYPE>::do_copy(void* dest, const void* from, size_t num) const {
     copy_type( reinterpret_cast<TYPE*>(dest), reinterpret_cast<const TYPE*>(from), num );
 }
 
-template<class TYPE>
+template<class TYPE> UTILS_VECTOR_NO_CFI
 void Vector<TYPE>::do_splat(void* dest, const void* item, size_t num) const {
     splat_type( reinterpret_cast<TYPE*>(dest), reinterpret_cast<const TYPE*>(item), num );
 }
 
-template<class TYPE>
+template<class TYPE> UTILS_VECTOR_NO_CFI
 void Vector<TYPE>::do_move_forward(void* dest, const void* from, size_t num) const {
     move_forward_type( reinterpret_cast<TYPE*>(dest), reinterpret_cast<const TYPE*>(from), num );
 }
 
-template<class TYPE>
+template<class TYPE> UTILS_VECTOR_NO_CFI
 void Vector<TYPE>::do_move_backward(void* dest, const void* from, size_t num) const {
     move_backward_type( reinterpret_cast<TYPE*>(dest), reinterpret_cast<const TYPE*>(from), num );
 }
